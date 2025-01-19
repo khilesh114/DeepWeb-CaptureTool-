@@ -1,0 +1,81 @@
+name: Setup Tor Proxy
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  setup-tor-proxy:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@v4
+
+    - name: Install Tor, wget, torsocks, and wkhtmltopdf
+      run: |
+        sudo apt update
+        sudo apt install -y tor wget torsocks wkhtmltopdf
+
+    - name: Start Tor service
+      run: |
+        sudo systemctl start tor
+        sudo systemctl enable tor
+
+    - name: Verify Tor Installation and Test Connection
+      run: |
+        # Check if Tor is running
+        if ! sudo systemctl is-active --quiet tor; then
+          echo "Tor service is not running!" && exit 1
+        fi
+        echo "Tor service is running"
+
+        # Test Tor connectivity
+        torsocks wget -q -O test.html https://check.torproject.org
+        if [ $? -eq 0 ]; then
+          echo "Tor is working"
+        else
+          echo "Tor connectivity test failed" && exit 1
+        fi
+      shell: bash
+
+    - name: Create onionlink.txt with sample URLs
+      run: |
+        cat onionlink.txt
+
+    - name: Download HTML pages and generate PDFs
+      run: |
+        while IFS= read -r url; do
+          echo "Processing $url"
+          sanitized_url=$(echo $url | sed 's/[^a-zA-Z0-9]/_/g') # sanitize URL for filenames
+
+          # Retry logic for downloading HTML
+          for i in {1..3}; do
+            torsocks wget -q -O "${sanitized_url}.html" "$url" && break
+            echo "Retry $i for $url failed"
+            if [ $i -eq 3 ]; then
+              echo "Failed to download $url after 3 attempts, skipping..."
+              continue 2
+            fi
+          done
+
+          # Retry logic for generating PDF
+          for i in {1..3}; do
+            torsocks wkhtmltopdf "$url" "${sanitized_url}.pdf" && break
+            echo "Retry $i for PDF generation failed"
+            if [ $i -eq 3 ]; then
+              echo "Failed to generate PDF for $url after 3 attempts"
+            fi
+          done
+        done < onionlink.txt
+      shell: bash
+
+    - name: Upload HTML files and PDFs as artifacts
+      uses: actions/upload-artifact@v3
+      with:
+        name: tor-check-pages
+        path: |
+          *.html
+          *.pdf
